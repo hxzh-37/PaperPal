@@ -19,32 +19,55 @@ load_dotenv()
 # Configure Google AI
 genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
+def local_css():
+    st.markdown("""
+        <style>
+        html, body, [class*="css"]  {
+            font-family: 'Segoe UI', sans-serif;
+        }
+        .stButton>button {
+            background-color: #1E88E5;
+            color: white;
+            border: none;
+            padding: 0.5em 1em;
+            font-size: 16px;
+            border-radius: 8px;
+            margin-top: 0.35em;
+        }
+        .stButton>button:hover {
+            background-color: #1565C0;
+            color: white;
+        }
+        .block-container .stTextInput>div>div>input {
+            margin-top: 0.35em;
+        }
+        footer {visibility: hidden;}
+        </style>
+    """, unsafe_allow_html=True)
+
 def get_pdf_text(pdf_docs):
-    """Extract text from uploaded PDF files"""
     text = ""
     for pdf in pdf_docs:
         pdf_reader = PdfReader(pdf)
         for page in pdf_reader.pages:
-            text += page.extract_text()
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text
     return text
 
 def get_text_chunks(text):
-    """Split text into chunks for processing"""
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=10000, 
+        chunk_size=10000,
         chunk_overlap=1000
     )
-    chunks = text_splitter.split_text(text)
-    return chunks
+    return text_splitter.split_text(text)
 
 def get_vector_store(text_chunks):
-    """Create and save vector store from text chunks"""
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
     vector_store.save_local("faiss_index")
 
 def get_conversational_chain():
-    """Create the conversational chain for Q&A"""
     prompt_template = """
     You are an intelligent assistant helping a user based on the contents of multiple PDF documents.
 
@@ -55,69 +78,53 @@ def get_conversational_chain():
     If the answer is **partially related**, you may **enhance it with general knowledge**, but make sure to **note what is from the PDF** and what is from external knowledge.
 
     If the answer is **completely unrelated** to the content, respond with:  
-    "I couldn't find that information in the provided documents."
+    \"I couldn't find that information in the provided documents.\"
 
     ---------------------
-    Context:\n {context}?\n
+    Context:\n{context}\n
     ---------------------
 
-    Question: \n{question}\n
-
+    Question:\n{question}\n
     Answer:
     """
-    
     model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
     prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
-    chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
-    return chain
+    return load_qa_chain(model, chain_type="stuff", prompt=prompt)
 
 def user_input(user_question):
-    """Process user question and provide response"""
     try:
-        # Load the vector store
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        
-        # Check if faiss_index exists
         if not os.path.exists("faiss_index"):
             st.error("Please upload and process PDF files first!")
             return
-            
+
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
         docs = new_db.similarity_search(user_question)
-        
         chain = get_conversational_chain()
-        
-        response = chain(
-            {"input_documents": docs, "question": user_question}, 
-            return_only_outputs=True
-        )
-        
-        st.write("Reply: ", response["output_text"])
-        
+        response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
+        st.success("Response ready!")
+        st.markdown(f"**Reply:** {response['output_text']}")
+
     except Exception as e:
         st.error(f"Error processing question: {str(e)}")
         st.error("Make sure you have uploaded and processed PDF files first.")
 
 def main():
-    st.set_page_config(page_title="PaperPal")
-    st.header("Chat with PDFs using PaperPal💁")
+    st.set_page_config(page_title="PaperPal - Chat with Your PDFs", page_icon=None, layout="wide")
+    local_css()
 
-    user_question = st.text_input("Ask a Question from the PDF Files")
-
-    if user_question:
-        user_input(user_question)
+    st.markdown("<h1 style='text-align: center; color: #1E88E5;'>PaperPal</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; font-size: 18px;'>Chat with your PDF documents effortlessly</p>", unsafe_allow_html=True)
+    st.divider()
 
     with st.sidebar:
-        st.title("Menu:")
-        pdf_docs = st.file_uploader(
-            "Upload your PDF Files and Click on the Submit & Process Button", 
-            accept_multiple_files=True,
-            type=['pdf']
-        )
-        
+        st.title("Upload PDFs")
+        st.markdown("Upload one or more PDF files to start interacting with them.")
+        pdf_docs = st.file_uploader("Select PDF files", accept_multiple_files=True, type=['pdf'])
+
         if st.button("Submit & Process"):
             if pdf_docs:
-                with st.spinner("Processing..."):
+                with st.spinner("Extracting and indexing text..."):
                     try:
                         raw_text = get_pdf_text(pdf_docs)
                         if raw_text.strip():
@@ -125,11 +132,24 @@ def main():
                             get_vector_store(text_chunks)
                             st.success("Done! You can now ask questions about your PDFs.")
                         else:
-                            st.error("No text could be extracted from the PDF files.")
+                            st.error("No extractable text found in the uploaded files.")
                     except Exception as e:
-                        st.error(f"Error processing PDFs: {str(e)}")
+                        st.error(f"Error: {str(e)}")
             else:
-                st.error("Please upload at least one PDF file.")
+                st.error("Please upload at least one PDF.")
+
+    st.markdown("## Ask a Question")
+    st.markdown("Type a question below based on the uploaded PDFs.")
+
+    with st.form(key="qa_form"):
+        user_question = st.text_input("", placeholder="Enter your question here")
+        ask = st.form_submit_button("Ask")
+
+        if ask and user_question:
+            with st.spinner("Processing..."):
+                user_input(user_question)
+
+    st.markdown("---")
 
 if __name__ == "__main__":
     main()
